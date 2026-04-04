@@ -1,5 +1,7 @@
 from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, field
+from pathlib import Path
+import csv
 from config import uEDDEConfig
 from data_generator import DataGenerator
 
@@ -47,6 +49,7 @@ class GlobalSolution:
     slot_solutions: List[SlotSolution] = field(default_factory=list)
     total_objective: float = 0.0
     total_solve_time: float = 0.0
+    trace_csv_path: Optional[str] = None
     
     def add_slot_solution(self, sol: SlotSolution):
         self.slot_solutions.append(sol)
@@ -61,6 +64,83 @@ class BaseSolver(ABC):
         self.config = config
         self.data = data_gen
         self.solution = GlobalSolution(config=config)
+
+    def _format_placement(self, placement: Dict[Tuple[int, int], int]) -> str:
+        rows = []
+        for i in range(self.config.num_datasets):
+            servers = [str(j) for j in range(self.config.num_servers) if placement.get((i, j), 0) == 1]
+            rows.append(f"{i}:{'|'.join(servers) if servers else '-'}")
+        return ";".join(rows)
+
+    def _format_demand(self, t: int) -> str:
+        entries = []
+        for i in range(self.config.num_datasets):
+            for p in self.data.attachment_points.get(t, []):
+                count = int(self.data.counts.get((i, p, t), 0))
+                if count > 0:
+                    entries.append(f"{i}@{p}={count}")
+        return ";".join(entries) if entries else "-"
+
+    def _coverage_summary(self, t: int, placement: Dict[Tuple[int, int], int]) -> Tuple[int, int, int, float]:
+        demand_pairs = 0
+        covered_pairs = 0
+        total_requests = 0
+
+        for i in range(self.config.num_datasets):
+            if self.data.active_datasets.get((i, t), 0) != 1:
+                continue
+            H_i = self.config.hop_budgets[i]
+            for p in self.data.attachment_points.get(t, []):
+                req = int(self.data.counts.get((i, p, t), 0))
+                if req <= 0:
+                    continue
+                demand_pairs += 1
+                total_requests += req
+                covered = any(
+                    placement.get((i, j), 0) == 1 and self.config.hop_distances.get((j, p), float("inf")) <= H_i
+                    for j in range(self.config.num_servers)
+                )
+                if covered:
+                    covered_pairs += 1
+
+        coverage_ratio = covered_pairs / demand_pairs if demand_pairs else 0.0
+        return total_requests, demand_pairs, covered_pairs, coverage_ratio
+
+    def _build_trace_row(self, t: int, before_state: Dict[Tuple[int, int], int], sol: SlotSolution) -> Dict[str, Any]:
+        total_requests, demand_pairs, covered_pairs, coverage_ratio = self._coverage_summary(t, sol.states)
+        actions = [f"ADD:{i},{j}" for (i, j), v in sorted(sol.adds.items()) if v > 0]
+        actions.extend(f"REMOVE:{i},{j}" for (i, j), v in sorted(sol.removes.items()) if v > 0)
+
+        return {
+            "slot": t,
+            "timestamp": t - 1,
+            "action_count": int(sum(sol.adds.values()) + sum(sol.removes.values())),
+            "adds": int(sum(sol.adds.values())),
+            "removes": int(sum(sol.removes.values())),
+            "actions": ";".join(actions) if actions else "-",
+            "placement_before": self._format_placement(before_state),
+            "placement_after": self._format_placement(sol.states),
+            "demand": self._format_demand(t),
+            "attachment_points": ",".join(map(str, self.data.attachment_points.get(t, []))) if self.data.attachment_points.get(t, []) else "-",
+            "total_requests": total_requests,
+            "demand_pairs": demand_pairs,
+            "covered_pairs_after": covered_pairs,
+            "uncovered_pairs_after": max(0, demand_pairs - covered_pairs),
+            "coverage_ratio_after": coverage_ratio,
+            "objective": sol.objective_value,
+            "R_nominal": sol.R_nominal,
+            "B_nominal": sol.B_nominal,
+            "R_wc": sol.R_wc,
+            "B_wc": sol.B_wc,
+            "Op_cost": sol.Op_cost,
+            "solve_time": sol.solve_time,
+            "status": sol.status,
+        }
+
+    def _trace_csv_path(self) -> Path:
+        out_dir = Path(getattr(self.config, "plot_output_dir", "results"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / "action_trace.csv"
     
     @abstractmethod
     def solve_slot(self, t: int, A_prev: Dict[Tuple[int, int], int]) -> SlotSolution:
@@ -77,29 +157,47 @@ class BaseSolver(ABC):
         
         A_prev = self.data.initial_state.copy()
         log_every = 1 if self.config.T <= 50 else max(1, self.config.T // 20)
+
+        trace_path = self._trace_csv_path()
+        with trace_path.open("w", newline="", encoding="utf-8") as trace_file:
+            trace_writer = csv.DictWriter(trace_file, fieldnames=[
+                "slot", "timestamp", "action_count", "adds", "removes", "actions",
+                "placement_before", "placement_after", "demand", "attachment_points",
+                "total_requests", "demand_pairs", "covered_pairs_after", "uncovered_pairs_after",
+                "coverage_ratio_after", "objective", "R_nominal", "B_nominal", "R_wc", "B_wc",
+                "Op_cost", "solve_time", "status",
+            ])
+            trace_writer.writeheader()
         
-        for t in range(1, self.config.T + 1):
-            should_log = verbose and (t == 1 or t == self.config.T or t % log_every == 0)
-            if should_log:
-                print(f"\n{'─'*80}")
-                print(f"Time Slot {t}/{self.config.T}")
-                print(f"{'─'*80}")
-            
-            slot_sol = self.solve_slot(t, A_prev)
-            self.solution.add_slot_solution(slot_sol)
-            
-            # Update state for next slot
-            A_prev = slot_sol.states.copy()
-            
-            if should_log:
-                print(f"✓ Slot {t} complete: Obj={slot_sol.objective_value:.4f}, "
-                      f"Adds={len(slot_sol.adds)}, Removes={len(slot_sol.removes)}, "
-                      f"Time={slot_sol.solve_time:.2f}s")
+            for t in range(1, self.config.T + 1):
+                should_log = verbose and (t == 1 or t == self.config.T or t % log_every == 0)
+                if should_log:
+                    print(f"\n{'─'*80}")
+                    print(f"Time Slot {t}/{self.config.T}")
+                    print(f"{'─'*80}")
+
+                before_state = A_prev.copy()
+                slot_sol = self.solve_slot(t, A_prev)
+                self.solution.add_slot_solution(slot_sol)
+
+                # Update state for next slot
+                A_prev = slot_sol.states.copy()
+
+                trace_writer.writerow(self._build_trace_row(t, before_state, slot_sol))
+                trace_file.flush()
+
+                if should_log:
+                    print(f"✓ Slot {t} complete: Obj={slot_sol.objective_value:.4f}, "
+                          f"Adds={len(slot_sol.adds)}, Removes={len(slot_sol.removes)}, "
+                          f"Time={slot_sol.solve_time:.2f}s")
+
+        self.solution.trace_csv_path = str(trace_path)
         
         if verbose:
             print("\n" + "="*80)
             print(f"TOTAL OBJECTIVE: {self.solution.total_objective:.4f}")
             print(f"TOTAL TIME: {self.solution.total_solve_time:.2f}s")
+            print(f"TRACE CSV: {self.solution.trace_csv_path}")
             print("="*80)
         
         return self.solution

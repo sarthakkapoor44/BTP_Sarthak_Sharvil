@@ -119,7 +119,7 @@ class ObjectiveCalculator:
         )
         
         if denom <= 0:
-            # print("⚠️  Warning: R_nominal denominator is zero or negative. Returning 0.0.")
+            print("⚠️  Warning: R_nominal denominator is zero or negative. Returning 0.0.")
             return 0.0
         
         # Numerator: total size removed

@@ -78,13 +78,14 @@ class ExperimentConfig:
     # -------- OPTIMIZATION --------
     LAMBDA_ADD: float = 1.0  # Migration cost weight
     ETA_STABILITY: float = 0.0  # Stability penalty
-    SOLVER_TYPE: str = "milp"  # Options: "milp", "custom", "greedy", "lyapunov", "mcts","qlearning"
+    SOLVER_TYPE: str = "milp"  # Options: "milp", "offline_milp", "custom", "greedy", "lyapunov", "mcts", "qlearning"
     SOLVER_TIME_LIMIT: int = 300  # Seconds
     SOLVER_GAP: float = 0.01  # MIP gap tolerance
     
     # -------- NETWORK --------
     EDGE_PROBABILITY: float = 0.5  # For random topology
-    HOP_BUDGETS: Dict[int, int] = None  # Dataset-specific hop constraints
+    HOP_BUDGET_VALUE: int = 1  # Uniform hop budget applied to all datasets by default
+    HOP_BUDGETS: Dict[int, int] = None  # Optional explicit per-dataset override
     
     # -------- CAPACITY --------
     SERVER_CAPACITY: float = 10000.0  # Per-server capacity
@@ -105,10 +106,20 @@ class ExperimentConfig:
     N_JOBS: int = 0  # 0 = auto(cpu_count), 1 = force sequential
     VERBOSE: bool = True
     
-    def __post_init__(self):
-        """Initialize defaults"""
-        if self.HOP_BUDGETS is None:
-            self.HOP_BUDGETS = {i: 2 + i % 2 for i in range(self.NUM_DATASETS)}
+    def resolve_hop_budgets(self) -> Dict[int, int]:
+        """Return hop budgets from one central control point.
+
+        Priority:
+        1) Explicit HOP_BUDGETS dict (if provided)
+        2) Uniform HOP_BUDGET_VALUE for all datasets
+        """
+        if self.HOP_BUDGETS is not None:
+            # Normalize to full dataset index range in case caller provides partial map.
+            return {
+                i: int(self.HOP_BUDGETS.get(i, self.HOP_BUDGET_VALUE))
+                for i in range(self.NUM_DATASETS)
+            }
+        return {i: int(self.HOP_BUDGET_VALUE) for i in range(self.NUM_DATASETS)}
 
 
 # ============================================================================
@@ -164,6 +175,9 @@ def build_config(exp_cfg: ExperimentConfig) -> uEDDEConfig:
         seed=42
     )
     
+    # -------- RESOLVE HOP BUDGETS FROM CENTRAL CONTROL --------
+    hop_budgets = exp_cfg.resolve_hop_budgets()
+
     # -------- OVERRIDE CONFIG WITH PARAMETERS --------
     config.override(
         T=exp_cfg.T,
@@ -184,13 +198,16 @@ def build_config(exp_cfg: ExperimentConfig) -> uEDDEConfig:
         save_plots=exp_cfg.SAVE_OUTPUTS,
         plot_output_dir=exp_cfg.OUTPUT_DIR,
         verbose=exp_cfg.VERBOSE,
-        hop_budgets=exp_cfg.HOP_BUDGETS,
+        hop_budgets=hop_budgets,
         dataset_sizes={i: exp_cfg.DATASET_SIZE for i in range(exp_cfg.NUM_DATASETS)},
         server_capacities={j: exp_cfg.SERVER_CAPACITY for j in range(exp_cfg.NUM_SERVERS)},
         adjacency=adjacency,
         dataset_source=exp_cfg.DATASET_SOURCE,
         custom_dataset_path=exp_cfg.CSV_FILE,  # Store CSV file path for later loading
     )
+
+    if exp_cfg.VERBOSE:
+        print(f"✓ Hop budget control: uniform={exp_cfg.HOP_BUDGET_VALUE}, resolved={hop_budgets}")
     
     if exp_cfg.VERBOSE:
         config.print_summary()
@@ -314,7 +331,7 @@ def run_single_solver(exp_cfg: ExperimentConfig) -> GlobalSolution:
     
     if config.plot_summary:
         viz = ResultsVisualizer(solution, data)
-        viz.print_statistics_table(save_to_file=config.save_plots)
+        viz.print_statistics_table(save_to_file=True)
         viz.plot_all()
     
     return solution
@@ -365,7 +382,7 @@ def run_k_failure_sweep(exp_cfg: ExperimentConfig, k_values: List[int]) -> Dict[
             k_sorted = sorted(solutions.keys())
             k_payload = [(k, solutions[k].total_objective) for k in k_sorted]
             viz = ResultsVisualizer(solutions[k_sorted[-1]], data)
-            viz.print_statistics_table(save_to_file=config.save_plots)
+            viz.print_statistics_table(save_to_file=True)
             viz.plot_all(k_sweep_results=k_payload)
     else:
         solutions = SolverFactory.solve_and_visualize(config, data, k_list=k_values)
@@ -464,15 +481,15 @@ if __name__ == "__main__":
     exp1.NUM_SERVERS = 5
     exp1.K_FAILURES = 1
     exp1.RHO = 0.3
-    exp1.SOLVER_TYPE = "greedy" 
+    exp1.SOLVER_TYPE = "milp" 
     exp1.USE_ROBUST = False
-    exp1.USE_CCG = True
+    exp1.USE_CCG = False
     exp1.VERBOSE = False
     exp1.PLOT_PER_SLOT = False
     exp1.PLOT_SUMMARY = True
     exp1.SAVE_OUTPUTS = True
     exp1.PARALLEL = True
-    exp1.OUTPUT_DIR = "results/run_single_solver"
+    exp1.OUTPUT_DIR = f"results/run_single_solver/single_{exp1.SOLVER_TYPE}"
     exp1.DATASET_SOURCE = "csv"
     exp1.CSV_FILE = "netflix_distilled.csv"  
     

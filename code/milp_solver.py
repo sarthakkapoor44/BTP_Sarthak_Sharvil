@@ -41,6 +41,42 @@ class MILPSolver(BaseSolver):
         sol.solve_time = time.time() - start_time
         return sol
 
+    def _finalize_slot_objective(
+        self,
+        sol: SlotSolution,
+        t: int,
+        A_prev: Dict[Tuple[int, int], int],
+        robust_override: Dict = None,
+    ):
+        """Centralized objective/metric assignment for MILP slot outputs."""
+        breakdown = self.calculator.calculate(
+            t=t,
+            state_current=sol.states,
+            state_prev=A_prev,
+        )
+
+        sol.R_nominal = float(breakdown.R_nominal)
+        sol.B_nominal = float(breakdown.B_nominal)
+        sol.Op_cost = float(breakdown.Op_cost)
+
+        if self.config.use_robust:
+            if robust_override is not None:
+                sol.R_wc = float(robust_override.get("R_wc", breakdown.R_wc))
+                sol.B_wc = float(robust_override.get("B_wc", breakdown.B_wc))
+            else:
+                sol.R_wc = float(breakdown.R_wc)
+                sol.B_wc = float(breakdown.B_wc)
+
+            sol.objective_value = (
+                (1.0 - self.config.rho) * (sol.R_nominal + sol.B_nominal)
+                + self.config.rho * (sol.R_wc + sol.B_wc)
+                - sol.Op_cost
+            )
+        else:
+            sol.R_wc = 0.0
+            sol.B_wc = 0.0
+            sol.objective_value = float(breakdown.objective_nominal)
+
     # -------------------------------------------------------------------------
     # CCG Adversarial: pick failures only (coverage separator + recourse eval)
     # -------------------------------------------------------------------------
@@ -307,14 +343,9 @@ class MILPSolver(BaseSolver):
                         sol.states[(i, j)] = 1
             if adv_info is not None:
                 sol.failures = adv_info.get('failures', {})
-                sol.R_wc = adv_info.get('R_wc', 0.0)
-                sol.B_wc = adv_info.get('B_wc', 0.0)
             for key, var in B_nom_ip.items():
                 sol.benefit_nominal_per_ip[key] = pulp.value(var)
-            sol.objective_value = master_obj_val
-            sol.R_nominal = pulp.value(R_nom) if isinstance(R_nom, pulp.LpAffineExpression) else R_nom
-            sol.B_nominal = pulp.value(B_nom) if isinstance(B_nom, pulp.LpAffineExpression) else B_nom
-            sol.Op_cost = pulp.value(Op)
+            self._finalize_slot_objective(sol, t, A_prev, robust_override=adv_info)
             return sol
 
         for iteration in range(self.config.ccg_max_iterations):
@@ -644,7 +675,8 @@ class MILPSolver(BaseSolver):
             B_nom = 0
 
         Op = self.config.lambda_add * pulp.lpSum(self.config.get_add_cost(i, j, t) * a[(i, j)] for i in I for j in J)
-        obj = (1 - self.config.rho) * (R_nom + B_nom) - Op
+        # Non-robust direct objective should not be scaled by rho.
+        obj = (R_nom + B_nom) - Op
         self.model += obj
 
         # Solve
@@ -669,9 +701,6 @@ class MILPSolver(BaseSolver):
                 for p in P_t:
                     if (i, p) in B_nom_ip:
                         sol.benefit_nominal_per_ip[(i, p)] = pulp.value(B_nom_ip[(i, p)])
-            sol.objective_value = pulp.value(self.model.objective)
-            sol.R_nominal = pulp.value(R_nom) if isinstance(R_nom, pulp.LpAffineExpression) else R_nom
-            sol.B_nominal = pulp.value(B_nom) if isinstance(B_nom, pulp.LpAffineExpression) else B_nom
-            sol.Op_cost = pulp.value(Op)
+            self._finalize_slot_objective(sol, t, A_prev)
         return sol
 

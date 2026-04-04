@@ -73,7 +73,7 @@ class uEDDEConfig:
         if not self.dataset_sizes:
             self.dataset_sizes = {i: 10.0 + i*5 for i in range(self.num_datasets)}
         if not self.hop_budgets:
-            self.hop_budgets = {i: 2 + i % 2 for i in range(self.num_datasets)}
+            self.hop_budgets = {i: 1 for i in range(self.num_datasets)}
         if not self.server_capacities:
             self.server_capacities = {j: 50.0 for j in range(self.num_servers)}
         if not self.server_bandwidth:

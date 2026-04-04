@@ -2,6 +2,7 @@ from solver_base import BaseSolver,GlobalSolution
 from config import uEDDEConfig
 from data_generator import DataGenerator
 from milp_solver import MILPSolver
+from offline_milp_solver import OfflineMILPSolver
 from lyapunov_solver import LyapunovSolver
 from greedy_custom_solver import GreedyCustomSolver
 from rein_adaptive_solver import REINAdaptiveSolver
@@ -21,6 +22,8 @@ class SolverFactory:
         
         if solver_type == "milp":
             return MILPSolver(config, data_gen)
+        elif solver_type == "offline_milp":
+            return OfflineMILPSolver(config, data_gen)
         elif solver_type == "lyapunovsolver":
             return LyapunovSolver(config, data_gen)
         elif solver_type == "rein":
@@ -33,7 +36,7 @@ class SolverFactory:
             return QLearningSolver(config, data_gen)
         else:
             raise ValueError(f"Unknown solver type: {solver_type}. "
-                           f"Options: 'milp', 'greedy', 'lyapunovsolver', 'rein', 'mcts', 'qlearning'")
+                           f"Options: 'milp', 'offline_milp', 'greedy', 'lyapunovsolver', 'rein', 'mcts', 'qlearning'")
     @staticmethod
     def _run_single_configuration(config: uEDDEConfig, data_gen: DataGenerator,
                                   show_visuals: bool = True,

@@ -4,6 +4,7 @@ from config import uEDDEConfig
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import networkx as nx
 from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple, Optional
@@ -47,6 +48,7 @@ class ResultsVisualizer:
         self.plot_placement_evolution()
         self.plot_objective_components()
         self.plot_migration_costs()
+        self.plot_network_topology()
         
         if self.config.use_robust:
             self.plot_robust_comparison()
@@ -278,6 +280,205 @@ class ResultsVisualizer:
         plt.tight_layout()
         self._emit_figure(fig, "robust_comparison")
     
+    def plot_network_topology(self):
+        """Plot and save network topology visualization"""
+        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        
+        # Build graph from adjacency list
+        G = nx.Graph()
+        adjacency = self.config.adjacency
+        for node, neighbors in adjacency.items():
+            for neighbor in neighbors:
+                G.add_edge(node, neighbor)
+        
+        # Use spring layout for nice positioning
+        pos = nx.spring_layout(G, seed=42, k=1, iterations=50)
+        
+        # Draw nodes
+        nx.draw_networkx_nodes(G, pos, node_color='lightblue', 
+                              node_size=800, alpha=0.9, ax=ax)
+        
+        # Draw labels
+        nx.draw_networkx_labels(G, pos, font_size=12, font_weight='bold', ax=ax)
+        
+        # Draw edges
+        nx.draw_networkx_edges(G, pos, alpha=0.5, width=2, ax=ax)
+        
+        # Compute network statistics
+        num_nodes = G.number_of_nodes()
+        num_edges = G.number_of_edges()
+        avg_degree = 2 * num_edges / num_nodes if num_nodes > 0 else 0
+        diameter = nx.diameter(G) if nx.is_connected(G) else float('inf')
+        
+        # Add statistics text
+        info_text = f"Nodes: {num_nodes} | Edges: {num_edges} | Avg Degree: {avg_degree:.2f} | Diameter: {diameter}"
+        fig.text(0.5, 0.02, info_text, ha='center',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5), fontsize=11)
+        
+        ax.set_title('Network Topology', fontsize=16, fontweight='bold')
+        ax.axis('off')
+        
+        plt.tight_layout()
+        self._emit_figure(fig, "network_topology")
+    
+    def save_network_topology_info(self):
+        """Save adjacency list and hop distances to file"""
+        if not self.save_plots:
+            return
+        
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        topology_path = self.output_dir / f"{ts}_network_topology.txt"
+        
+        with topology_path.open("w", encoding="utf-8") as f:
+            f.write("="*80 + "\n")
+            f.write("NETWORK TOPOLOGY INFORMATION\n")
+            f.write("="*80 + "\n\n")
+            
+            # Adjacency list
+            f.write("ADJACENCY LIST:\n")
+            f.write("-"*80 + "\n")
+            for node, neighbors in sorted(self.config.adjacency.items()):
+                f.write(f"Server {node}: {neighbors}\n")
+            
+            # Network statistics
+            f.write("\n" + "="*80 + "\n")
+            f.write("NETWORK STATISTICS:\n")
+            f.write("-"*80 + "\n")
+            
+            G = nx.Graph()
+            for node, neighbors in self.config.adjacency.items():
+                for neighbor in neighbors:
+                    G.add_edge(node, neighbor)
+            
+            num_nodes = G.number_of_nodes()
+            num_edges = G.number_of_edges()
+            avg_degree = 2 * num_edges / num_nodes if num_nodes > 0 else 0
+            diameter = nx.diameter(G) if nx.is_connected(G) else float('inf')
+            
+            f.write(f"Number of servers (nodes): {num_nodes}\n")
+            f.write(f"Number of links (edges): {num_edges}\n")
+            f.write(f"Average degree: {avg_degree:.2f}\n")
+            f.write(f"Network diameter: {diameter}\n")
+            
+            # Hop distances matrix
+            f.write("\n" + "="*80 + "\n")
+            f.write("HOP DISTANCES (source → target):\n")
+            f.write("-"*80 + "\n")
+            f.write("From each server to each server:\n\n")
+            
+            for src in range(self.config.num_servers):
+                dists = []
+                for dst in range(self.config.num_servers):
+                    dist = self.config.hop_distances.get((src, dst), float('inf'))
+                    if dist == float('inf'):
+                        dists.append(f"{dst}:∞")
+                    else:
+                        dists.append(f"{dst}:{int(dist)}")
+                f.write(f"Server {src}: {', '.join(dists)}\n")
+            
+            # Hop budgets for datasets
+            f.write("\n" + "="*80 + "\n")
+            f.write("HOP BUDGETS (per dataset):\n")
+            f.write("-"*80 + "\n")
+            for dataset_id, hop_budget in sorted(self.config.hop_budgets.items()):
+                f.write(f"Dataset {dataset_id}: {hop_budget} hop(s)\n")
+            
+            f.write("\n" + "="*80 + "\n")
+        
+        if self.config.verbose:
+            print(f"Saved network topology info: {topology_path}")
+
+    def save_coverage_violations_report(self):
+        """Save a slot-by-slot coverage violation report to file."""
+        if not self.save_plots:
+            return
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        violations_csv_path = self.output_dir / f"{ts}_coverage_violations.csv"
+        violations_txt_path = self.output_dir / f"{ts}_coverage_violations.txt"
+
+        violation_rows = []
+        slot_summary = []
+
+        for sol in self.solution.slot_solutions:
+            t = sol.time_slot
+            state = sol.states
+            slot_violations = 0
+            slot_demand_pairs = 0
+
+            for i in range(self.config.num_datasets):
+                if self.data.active_datasets.get((i, t), 0) != 1:
+                    continue
+
+                H_i = self.config.hop_budgets[i]
+                for p in self.data.attachment_points.get(t, []):
+                    request_count = self.data.counts.get((i, p, t), 0)
+                    if request_count <= 0:
+                        continue
+
+                    slot_demand_pairs += 1
+                    min_hop = float("inf")
+                    for j in range(self.config.num_servers):
+                        if state.get((i, j), 0) != 1:
+                            continue
+                        hop = self.config.hop_distances.get((j, p), float("inf"))
+                        if hop < min_hop:
+                            min_hop = hop
+
+                    if min_hop > H_i:
+                        slot_violations += 1
+                        violation_rows.append(
+                            {
+                                "slot": t,
+                                "dataset": i,
+                                "attachment_point": p,
+                                "requests": request_count,
+                                "hop_budget": H_i,
+                                "min_hop": "inf" if min_hop == float("inf") else int(min_hop),
+                                "reason": "uncovered_within_hop_budget",
+                            }
+                        )
+
+            slot_summary.append(
+                {
+                    "slot": t,
+                    "demand_pairs": slot_demand_pairs,
+                    "violations": slot_violations,
+                    "violation_ratio": (slot_violations / slot_demand_pairs) if slot_demand_pairs else 0.0,
+                }
+            )
+
+        violations_df = pd.DataFrame(
+            violation_rows,
+            columns=["slot", "dataset", "attachment_point", "requests", "hop_budget", "min_hop", "reason"],
+        )
+        violations_df.to_csv(violations_csv_path, index=False)
+
+        summary_df = pd.DataFrame(slot_summary)
+        total_violations = len(violation_rows)
+        total_demand_pairs = int(summary_df["demand_pairs"].sum()) if not summary_df.empty else 0
+        overall_ratio = (total_violations / total_demand_pairs) if total_demand_pairs else 0.0
+
+        with violations_txt_path.open("w", encoding="utf-8") as f:
+            f.write("COVERAGE VIOLATION REPORT\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Total demand pairs checked: {total_demand_pairs}\n")
+            f.write(f"Total violations: {total_violations}\n")
+            f.write(f"Overall violation ratio: {overall_ratio:.6f}\n\n")
+            f.write("Per-slot summary:\n")
+            f.write(summary_df.to_string(index=False))
+            f.write("\n")
+            if total_violations > 0:
+                f.write("\nFirst violations:\n")
+                f.write(violations_df.head(50).to_string(index=False))
+                f.write("\n")
+
+        if self.config.verbose:
+            print(f"Saved coverage violations: {violations_csv_path}")
+            print(f"Saved coverage violation summary: {violations_txt_path}")
+    
     def print_statistics_table(self, save_to_file: bool = False):
         """Print summary statistics table"""
         data = []
@@ -312,6 +513,7 @@ class ResultsVisualizer:
             csv_path = self.output_dir / f"{ts}_summary_statistics.csv"
             # txt_path = self.output_dir / f"{ts}_summary_statistics.txt"
             actions_csv_path = self.output_dir / f"{ts}_actions.csv"
+            placement_csv_path = self.output_dir / f"{ts}_placement_timeline.csv"
             # actions_txt_path = self.output_dir / f"{ts}_actions.txt"
             df.to_csv(csv_path, index=False)
             # with txt_path.open("w", encoding="utf-8") as f:
@@ -342,6 +544,38 @@ class ResultsVisualizer:
             actions_df = pd.DataFrame(action_rows, columns=["Slot", "Action", "Dataset", "Server"])
             actions_df.to_csv(actions_csv_path, index=False)
 
+            # Placement timeline: one initial row, then one row per slot after model decision.
+            placement_rows = [{
+                "time_step": 0,
+                "slot": 0,
+                "phase": "initial_before_any_decision",
+                "actions": "-",
+                "placement": self._format_placement(self.data.initial_state),
+            }]
+
+            for sol in self.solution.slot_solutions:
+                action_texts = []
+                for (dataset_id, server_id), val in sorted(sol.adds.items()):
+                    if val > 0:
+                        action_texts.append(f"ADD:{dataset_id},{server_id}")
+                for (dataset_id, server_id), val in sorted(sol.removes.items()):
+                    if val > 0:
+                        action_texts.append(f"REMOVE:{dataset_id},{server_id}")
+
+                placement_rows.append({
+                    "time_step": int(sol.time_slot),
+                    "slot": int(sol.time_slot),
+                    "phase": "after_slot_decision",
+                    "actions": ";".join(action_texts) if action_texts else "-",
+                    "placement": self._format_placement(sol.states),
+                })
+
+            placement_df = pd.DataFrame(
+                placement_rows,
+                columns=["time_step", "slot", "phase", "actions", "placement"],
+            )
+            placement_df.to_csv(placement_csv_path, index=False)
+
             # with actions_txt_path.open("w", encoding="utf-8") as f:
             #     if action_rows:
             #         f.write("REPLICA ACTIONS (add/remove by slot, dataset, server)\n")
@@ -357,5 +591,18 @@ class ResultsVisualizer:
                 print(f"Saved stats: {csv_path}")
                 # print(f"Saved stats: {txt_path}")
                 print(f"Saved actions: {actions_csv_path}")
+                print(f"Saved placement timeline: {placement_csv_path}")
                 # print(f"Saved actions: {actions_txt_path}")
+            
+            # Save network topology info
+            self.save_network_topology_info()
+            self.save_coverage_violations_report()
+
+    def _format_placement(self, state):
+        rows = []
+        for j in range(self.config.num_servers):
+            datasets = [str(i) for i in range(self.config.num_datasets) if state.get((i, j), 0) == 1]
+            datasets_text = ",".join(datasets) if datasets else "-"
+            rows.append(f"server {j}: {datasets_text}")
+        return " | ".join(rows)
 
