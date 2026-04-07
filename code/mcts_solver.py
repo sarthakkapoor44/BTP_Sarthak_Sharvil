@@ -10,14 +10,16 @@ from objective_calculator import ObjectiveCalculator
 
 # MCTS node for dataset-specific tree
 class DatasetMCTSNode:
-    def __init__(self, dataset_state: Dict[int, int], server_idx: int = -1, parent=None):
+    def __init__(self, dataset_state: Dict[int, int], server_idx: int = -1, parent=None, level: int = 0):
         """
         dataset_state: Dict[j -> 0/1] for dataset i across all servers
         server_idx: which server this node represents (-1 for root)
+        level: tree depth (number of servers decided so far)
         """
         self.dataset_state = dataset_state  # Dict[server_j -> 0/1]
         self.server_idx = server_idx
         self.parent = parent
+        self.level = level  # Track tree depth explicitly
         self.children: List["DatasetMCTSNode"] = []
         self.visits = 0
         self.value = 0.0
@@ -33,10 +35,10 @@ class MCTSSolver(BaseSolver):
         self,
         config: uEDDEConfig,
         data_gen: DataGenerator,
-        iterations: int = 1000,
-        exploration_c: float = 1.4,
+        iterations: int = 500,
+        exploration_c: float = 1.1,
         seed: int = 42,
-        unfulfilled_penalty: float = 100.0,
+        unfulfilled_penalty: float = 100,
     ):
         super().__init__(config, data_gen)
         self.iterations = int(iterations)
@@ -62,8 +64,9 @@ class MCTSSolver(BaseSolver):
         for i in datasets_to_optimize:
             print(f"[MCTS] Optimizing dataset {i} at slot {t}")
             
-            # Extract current dataset state
-            current_dataset_state = {j: final_state.get((i, j), 0) for j in J}
+            # Extract dataset state from A_prev (original baseline, not incremental final_state)
+            # This keeps cost calculations consistent across all datasets
+            current_dataset_state = {j: A_prev.get((i, j), 0) for j in J}
             
             # Run MCTS for this dataset
             optimized_state = self._mcts_for_dataset(
@@ -81,7 +84,7 @@ class MCTSSolver(BaseSolver):
                 print(f"[Greedy] Adding dataset {i} greedily for {len(unfulfilled)} attachment points")
                 for p in unfulfilled:
                     # Find cheapest server with capacity
-                    best_j = self._find_cheapest_server(i, j, p, t, final_state)
+                    best_j = self._find_cheapest_server(i, None, p, t, final_state)
                     if best_j is not None:
                         final_state[(i, best_j)] = 1
         
@@ -94,8 +97,9 @@ class MCTSSolver(BaseSolver):
     # === Heuristics ===
     def _identify_datasets_to_optimize(self, t: int) -> List[int]:
         """
-        Heuristic 1: Skip datasets whose request vector didn't change.
-        Assumes previous placement was optimal.
+        Identify datasets with requests at time t.
+        At t=0, optimize all active datasets (no previous requests to compare).
+        At t>0, only optimize datasets that have requests at time t.
         """
         I = range(self.config.num_datasets)
         datasets_to_opt = []
@@ -104,16 +108,21 @@ class MCTSSolver(BaseSolver):
             if self.data.active_datasets.get((i, t), 0) != 1:
                 continue
             
-            # Check if request vector changed from previous timestep
-            if t > 0:
-                prev_requests = {p: self.data.counts.get((i, p, t - 1), 0) for p in self.data.attachment_points.get(t - 1, [])}
-                curr_requests = {p: self.data.counts.get((i, p, t), 0) for p in self.data.attachment_points.get(t, [])}
-                
-                if prev_requests == curr_requests:
-                    print(f"[Heuristic] Skipping dataset {i} (request vector unchanged)")
-                    continue
+            # At t=0, always optimize all active datasets
+            if t == 0:
+                datasets_to_opt.append(i)
+                continue
             
-            datasets_to_opt.append(i)
+            # At t>0, check if this dataset has ANY requests at time t
+            has_requests = any(
+                self.data.counts.get((i, p, t), 0) > 0
+                for p in self.data.attachment_points.get(t, [])
+            )
+            
+            if has_requests:
+                datasets_to_opt.append(i)
+            else:
+                print(f"[Heuristic] Skipping dataset {i} (no requests at slot {t})")
         
         return datasets_to_opt
 
@@ -124,7 +133,6 @@ class MCTSSolver(BaseSolver):
         """
         J = range(self.config.num_servers)
         P_t = self.data.attachment_points.get(t, [])
-        
         server_scores = {}
         for j in J:
             score = 0
@@ -154,7 +162,7 @@ class MCTSSolver(BaseSolver):
         J = range(self.config.num_servers)
         server_order = self._get_server_ordering_heuristic(i, t)
         
-        root = DatasetMCTSNode(initial_state.copy(), server_idx=-1)
+        root = DatasetMCTSNode(initial_state.copy(), server_idx=-1, level=0)
         
         # MCTS iterations
         for _ in range(self.iterations):
@@ -187,11 +195,11 @@ class MCTSSolver(BaseSolver):
     ) -> DatasetMCTSNode:
         """
         Descend tree until we reach a node that needs expansion.
-        Each level = one server.
+        Each level = one server. Track depth with node.level (not dict length).
         """
         while True:
-            # Determine current server level
-            current_level = len(node.dataset_state)  # Number of servers visited so far
+            # Use explicit level tracking
+            current_level = node.level
             
             if current_level >= len(server_order):
                 # All servers visited (leaf reached)
@@ -215,8 +223,9 @@ class MCTSSolver(BaseSolver):
     ) -> DatasetMCTSNode:
         """
         Create 2 children: toggle dataset i on current server (add/remove/keep).
+        Track tree depth with explicit level parameter.
         """
-        current_level = len(node.dataset_state)
+        current_level = node.level
         if current_level >= len(server_order):
             return node
         
@@ -226,14 +235,14 @@ class MCTSSolver(BaseSolver):
         # Child 1: Toggle presence
         new_state_toggle = node.dataset_state.copy()
         new_state_toggle[server_j] = 1 - current_presence
-        child_toggle = DatasetMCTSNode(new_state_toggle, server_idx=server_j, parent=node)
+        child_toggle = DatasetMCTSNode(new_state_toggle, server_idx=server_j, parent=node, level=current_level + 1)
         node.children.append(child_toggle)
         
         # Child 2: Keep same (only if different from toggle)
         if len(node.children) == 1:
             new_state_keep = node.dataset_state.copy()
             new_state_keep[server_j] = current_presence
-            child_keep = DatasetMCTSNode(new_state_keep, server_idx=server_j, parent=node)
+            child_keep = DatasetMCTSNode(new_state_keep, server_idx=server_j, parent=node, level=current_level + 1)
             node.children.append(child_keep)
         
         return random.choice(node.children)
@@ -254,15 +263,21 @@ class MCTSSolver(BaseSolver):
         
         # Check for unfulfilled requests
         unfulfilled = self._find_unfulfilled_requests_for_state(i, t, dataset_state, global_state)
-        unfulfilled_penalty = self.unfulfilled_penalty * len(unfulfilled)
         
         # Calculate single-dataset objective
         reward = self._calculate_single_dataset_objective(
             i, dataset_state, t, A_prev, global_state
         )
         
-        # Subtract unfulfilled penalty
-        reward -= unfulfilled_penalty
+        # Add normalized unfulfilled penalty (scaled to match objective magnitude)
+        # Normalize by total requests to avoid dominating the objective
+        P_t = self.data.attachment_points.get(t, [])
+        N_t = sum(self.data.counts.get((i, p, t), 0) for p in P_t)
+        
+        if N_t > 0 and len(unfulfilled) > 0:
+            # Unfulfilled penalty per request (normalized)
+            unfulfilled_penalty_normalized = self.unfulfilled_penalty * len(unfulfilled) / N_t
+            reward -= unfulfilled_penalty_normalized
         
         return reward
 
@@ -427,11 +442,13 @@ class MCTSSolver(BaseSolver):
         
         # Combine objectives
         if self.config.use_robust:
-            objective = R_nom + B_wc + Op
+            objective = R_nom + B_wc - Op
         else:
-            objective = R_nom + B_nom + Op
+            objective = R_nom + B_nom - Op
         
-        return -objective  # Negative because we want to maximize benefit (minimize cost)
+        # Return objective directly (higher is better)
+        # Do NOT negate - we want higher rewards for better solutions
+        return objective
 
     def _backpropagate(self, node: DatasetMCTSNode, reward: float):
         cur = node
@@ -473,6 +490,7 @@ class MCTSSolver(BaseSolver):
         
         # Calculate full objective with all datasets
         # ObjectiveCalculator compares final_state vs A_prev and handles all costs
+    
         breakdown = self.calculator.calculate(
             t=t,
             state_current=final_state,
