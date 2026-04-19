@@ -71,7 +71,7 @@ class ExperimentConfig:
     # -------- ROBUSTNESS --------
     K_FAILURES: int = 1  # Maximum failures per slot
     GAMMA_BUDGET: float = 2.0  # Bertsimas-Sim uncertainty budget
-    RHO: float = 0.5  # Blend: 0=nominal only, 1=worst-case only
+    RHO: float = 0.2  # Blend: 0=nominal only, 1=worst-case only
     USE_ROBUST: bool = True
     USE_REPAIR_IN_ROBUST: bool = True  # Apply K+1 repair in robust mode
     USE_CCG: bool = True
@@ -567,8 +567,8 @@ if __name__ == "__main__":
     exp1.ENSEMBLE_USE_COUNTERFACTUAL = True
     exp1.SOLVER_TIME_LIMIT = 120
     exp1.SOLVER_GAP = 0.001
-    exp1.USE_ROBUST = False
-    exp1.USE_CCG = False
+    exp1.USE_ROBUST = True
+    exp1.USE_CCG = True
     exp1.VERBOSE = True
     exp1.PLOT_PER_SLOT = False
     exp1.GREEDY_BANDIT_ENABLED = True
