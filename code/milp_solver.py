@@ -14,13 +14,13 @@ class MILPSolver(BaseSolver):
     Two-stage robust per LaTeX (Option B: rings d=0..H_i) with AP-alive gating:
       - If AP p fails in a scenario: its coverage/rings/benefit terms are dropped.
 
-    Notes / Fixes vs previous version:
-      • Adversary still knocks out nodes from J (servers). APs are assumed to be
-        a subset of J (as the rest of the code gates with f[p] where p ∈ J).
-      • All B-normalizations in scenario/recourse use ONLY *alive* APs in the
-        denominator (N_sum_alive) to avoid washing out B and producing zeros.
-      • η is now unbounded below (lowBound=None) to be a true epigraph variable.
-      • More informative oracle logging.
+        Notes / Fixes vs previous version:
+            • Adversary still knocks out nodes from J (servers). APs are assumed to be
+                a subset of J (as the rest of the code gates with f[p] where p ∈ J).
+            • Worst-case benefit keeps the LaTeX denominator fixed at N_sum; AP-alive
+                gating is applied only in the numerator/eligible pairs.
+            • η is now unbounded below (lowBound=None) to be a true epigraph variable.
+            • More informative oracle logging.
     """
 
     def __init__(self, config: uEDDEConfig, data_gen: DataGenerator):
@@ -119,26 +119,26 @@ class MILPSolver(BaseSolver):
                 # 1) Recourse MAX (on survivors, AP-gated) for this failure pattern
                 rec_eval = self._evaluate_recourse_max_given_f(t, A_prev, x_fixed, f_current)
                 R_wc_nom = rec_eval["R_wc_nom"]   # normalized by same denom as master
-                B_wc_nom = rec_eval["B_wc_nom"]   # sum(barUpsilon * n_ip * B_ip) / (H_sum * N_sum_alive)
+                B_wc_nom = rec_eval["B_wc_nom"]   # sum(barUpsilon * n_ip * B_ip) / (H_sum * N_sum)
                 B_wc_ip_vals = rec_eval["B_wc_ip_vals"]  # raw per-(i,p) B_ip values
 
-                # 2) Closed-form BS penalty (one-sided, AP-alive gated, same denom)
+                # 2) Closed-form BS penalty (one-sided, AP-alive gated, fixed denom)
                 I_act = [i for i in I if self.data.active_datasets.get((i, t), 0) == 1]
                 H_sum = sum(self.config.hop_budgets[i] for i in I_act)
+                N_sum = sum(self.data.counts.get((i, p, t), 0) for i in I_act for p in P_t)
                 P_alive = [p for p in P_t if f_current.get(p, 0) == 0]
 
                 penalty = 0.0
-                if H_sum > 0 and P_alive:
-                    N_sum_alive = sum(self.data.counts.get((i, p, t), 0) for i in I_act for p in P_alive)
-                    if N_sum_alive > 0:
+                if H_sum > 0 and N_sum > 0 and P_alive:
+                    if N_sum > 0:
                         pairs_vals = []
                         for i in I_act:
                             for p in P_alive:
                                 n_ip = self.data.counts.get((i, p, t), 0)
                                 if n_ip <= 0:
                                     continue
-                                # qcoef = ((1 - f_p) * n_ip * B_ip) / (H_sum * N_sum_alive); here f_p=0 for alive
-                                qcoef = (n_ip * B_wc_ip_vals.get((i, p), 0.0)) / (H_sum * N_sum_alive)
+                                # qcoef = ((1 - f_p) * n_ip * B_ip) / (H_sum * N_sum); here f_p=0 for alive
+                                qcoef = (n_ip * B_wc_ip_vals.get((i, p), 0.0)) / (H_sum * N_sum)
                                 hat = self.data.weights_error.get((i, p, t), 0.0)
                                 if qcoef > 0 and hat > 0:
                                     pairs_vals.append(hat * qcoef)
@@ -279,19 +279,20 @@ class MILPSolver(BaseSolver):
         else:
             R_wc_expr = 0
 
-        # N_sum over ALIVE APs only
+        # N_sum over all APs in the slot (fixed nominal denominator)
         I_act = [i for i in I if self.data.active_datasets.get((i, t), 0) == 1]
         H_sum = sum(self.config.hop_budgets[i] for i in I_act)
+        N_sum = sum(self.data.counts.get((i, p, t), 0) for i in I_act for p in P_t)
         P_alive = [p for p in P_t if f_fixed.get(p, 0) == 0]
-        N_sum_alive = sum(self.data.counts.get((i, p, t), 0) for i in I_act for p in P_alive)
 
-        if H_sum > 0 and N_sum_alive > 0 and P_alive:
-            # Note: B_wc_ip already gated by (1 - f_p), so nominal average is over alive APs.
+        if H_sum > 0 and N_sum > 0 and P_alive:
+            # Note: B_wc_ip already gated by (1 - f_p), so only the numerator is
+            # AP-alive gated; the denominator remains the fixed slot-level N_sum.
             B_wc_nom_expr = pulp.lpSum(
                 self.data.weights_nominal.get((i, p, t), 1.0) *
                 self.data.counts.get((i, p, t), 0) * B_wc_ip[(i, p)]
                 for i in I_act for p in P_alive if self.data.counts.get((i, p, t), 0) > 0
-            ) / (H_sum * N_sum_alive)
+            ) / (H_sum * N_sum)
         else:
             B_wc_nom_expr = 0
 
@@ -492,26 +493,26 @@ class MILPSolver(BaseSolver):
                 else:
                     R_wc_s = 0
 
-                # B_wc nominal - BS penalty (dualized, AP-gated) with alive denom
+                # B_wc nominal - BS penalty (dualized, AP-gated) with fixed denom
                 I_act = [i for i in I if self.data.active_datasets.get((i, t), 0) == 1]
                 H_sum = sum(self.config.hop_budgets[i] for i in I_act)
+                N_sum = sum(self.data.counts.get((i, p, t), 0) for i in I_act for p in P_t)
                 P_alive_s = [p for p in P_t if f_s.get(p, 0) == 0]
-                N_sum_alive = sum(self.data.counts.get((i, p, t), 0) for i in I_act for p in P_alive_s)
                 active_pairs = [(i, p) for i in I_act for p in P_alive_s if self.data.counts.get((i, p, t), 0) > 0]
 
-                if H_sum > 0 and N_sum_alive > 0 and active_pairs:
+                if H_sum > 0 and N_sum > 0 and active_pairs:
                     B_wc_nominal = pulp.lpSum(
                         self.data.weights_nominal.get((i, p, t), 1.0) *
                         self.data.counts.get((i, p, t), 0) * B_wc_s[(i, p)]
                         for (i, p) in active_pairs
-                    ) / (H_sum * N_sum_alive)
+                    ) / (H_sum * N_sum)
                     pi_s = pulp.LpVariable(f"pi_s{s_idx}", lowBound=0)
                     phi_s = {(i, p): pulp.LpVariable(f"phi_s{s_idx}_{i}_{p}", lowBound=0) for (i, p) in active_pairs}
                     penalty = self.config.Gamma_budget * pi_s + pulp.lpSum(phi_s[(i, p)] for (i, p) in active_pairs)
                     B_wc_expr = B_wc_nominal - penalty
-                    # BS dual constraints: phi >= hat * qcoef - pi, with qcoef AP-gated over alive denom
+                    # BS dual constraints: phi >= hat * qcoef - pi, with qcoef AP-gated over fixed denom
                     for (i, p) in active_pairs:
-                        qcoef = (self.data.counts.get((i, p, t), 0) * B_wc_s[(i, p)]) / (H_sum * N_sum_alive)
+                        qcoef = (self.data.counts.get((i, p, t), 0) * B_wc_s[(i, p)]) / (H_sum * N_sum)
                         hat = self.data.weights_error.get((i, p, t), 0.0)
                         master += phi_s[(i, p)] >= hat * qcoef - pi_s
                 else:

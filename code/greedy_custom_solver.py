@@ -19,6 +19,45 @@ class GreedyCustomSolver(BaseSolver):
     def __init__(self, config, data):
         super().__init__(config, data)
         self.calculator = ObjectiveCalculator(config, data)
+        # Online action-value memory for a lightweight contextual-bandit refinement.
+        self._action_reward_mean: Dict[Tuple[str, int, int], float] = {}
+        self._action_trials: Dict[Tuple[str, int, int], int] = {}
+        self._total_action_trials: int = 0
+
+    def _is_dataset_feasible(self,
+                             storage: np.ndarray,
+                             request_vector: np.ndarray,
+                             shortest_paths: np.ndarray,
+                             dataset_idx: int,
+                             max_hops_for_feas: int) -> bool:
+        J = self.config.num_servers
+        for k in range(J):
+            if request_vector[k, dataset_idx] <= 0:
+                continue
+            reachable = False
+            for j2 in range(J):
+                if storage[j2, dataset_idx] and shortest_paths[k, j2] <= max_hops_for_feas:
+                    reachable = True
+                    break
+            if not reachable:
+                return False
+        return True
+
+    def _build_state_dict(self, storage: np.ndarray, I: int, J: int) -> Dict[Tuple[int, int], int]:
+        return {(i, j): 1 if storage[j, i] else 0 for i in range(I) for j in range(J)}
+
+    def _objective_value(self, t: int, state_current: Dict[Tuple[int, int], int], state_prev: Dict[Tuple[int, int], int]) -> float:
+        breakdown = self.calculator.calculate(t=t, state_current=state_current, state_prev=state_prev)
+        return float(breakdown.objective_total if self.config.use_robust else breakdown.objective_nominal)
+
+    def _record_action_feedback(self, action_key: Tuple[str, int, int], reward: float) -> None:
+        prev_n = self._action_trials.get(action_key, 0)
+        prev_mean = self._action_reward_mean.get(action_key, 0.0)
+        new_n = prev_n + 1
+        new_mean = prev_mean + (reward - prev_mean) / new_n
+        self._action_trials[action_key] = new_n
+        self._action_reward_mean[action_key] = new_mean
+        self._total_action_trials += 1
 
     def solve_slot(self, t: int, A_prev: Dict[Tuple[int, int], int]) -> SlotSolution:
         tic = time.time()
@@ -28,6 +67,11 @@ class GreedyCustomSolver(BaseSolver):
 
         rho = float(getattr(self.config, "rho", 0.0))
         lambda_add = float(getattr(self.config, "lambda_add", 0.0))
+        bandit_enabled = bool(getattr(self.config, "greedy_bandit_enabled", True))
+        bandit_iters = int(getattr(self.config, "greedy_bandit_iters", 20))
+        bandit_alpha = float(getattr(self.config, "greedy_bandit_alpha", 0.65))
+        bandit_ucb_c = float(getattr(self.config, "greedy_bandit_ucb_c", 0.35))
+        bandit_temp = float(getattr(self.config, "greedy_bandit_temperature", 0.02))
 
         # --- knobs / matrices ---
         # We'll still keep a "reachability" cap for greedy feasibility checks
@@ -91,19 +135,14 @@ class GreedyCustomSolver(BaseSolver):
                     continue
 
                 current_storage[j, i] = False
-                
-                feasible = True
-                for k in range(J):
-                    if request_vector[k, i] <= 0:
-                        continue
-                    reachable = False
-                    for j2 in range(J):
-                        if current_storage[j2, i] and shortest_paths[k, j2] <= max_hops_for_feas:
-                            reachable = True
-                            break
-                    if not reachable:
-                        feasible = False
-                        break
+
+                feasible = self._is_dataset_feasible(
+                    storage=current_storage,
+                    request_vector=request_vector,
+                    shortest_paths=shortest_paths,
+                    dataset_idx=i,
+                    max_hops_for_feas=max_hops_for_feas,
+                )
 
                 if feasible:
                     if initial_storage[j, i]:
@@ -111,11 +150,83 @@ class GreedyCustomSolver(BaseSolver):
                 else:
                     current_storage[j, i] = True
 
+        # ---------- ML-inspired refinement: online contextual-bandit local search ----------
+        state_current = self._build_state_dict(current_storage, I, J)
+        current_obj = self._objective_value(t=t, state_current=state_current, state_prev=A_prev)
+
+        if bandit_enabled and bandit_iters > 0:
+            for _ in range(bandit_iters):
+                best = None
+
+                for i in range(I):
+                    for j in range(J):
+                        op = "add" if not current_storage[j, i] else "remove"
+                        if op == "remove":
+                            current_storage[j, i] = False
+                            feasible = self._is_dataset_feasible(
+                                storage=current_storage,
+                                request_vector=request_vector,
+                                shortest_paths=shortest_paths,
+                                dataset_idx=i,
+                                max_hops_for_feas=max_hops_for_feas,
+                            )
+                            if not feasible:
+                                current_storage[j, i] = True
+                                continue
+                        else:
+                            current_storage[j, i] = True
+
+                        trial_state = self._build_state_dict(current_storage, I, J)
+                        trial_obj = self._objective_value(t=t, state_current=trial_state, state_prev=A_prev)
+                        delta = trial_obj - current_obj
+
+                        # Revert candidate move after scoring.
+                        current_storage[j, i] = (op == "remove")
+
+                        action_key = (op, i, j)
+                        mean_reward = self._action_reward_mean.get(action_key, 0.0)
+                        n = self._action_trials.get(action_key, 0)
+                        ucb_bonus = bandit_ucb_c * math.sqrt(
+                            math.log(1.0 + self._total_action_trials + 1.0) / (1.0 + n)
+                        )
+                        score = bandit_alpha * mean_reward + (1.0 - bandit_alpha) * delta + ucb_bonus
+
+                        if (best is None) or (score > best["score"]):
+                            best = {
+                                "op": op,
+                                "i": i,
+                                "j": j,
+                                "delta": delta,
+                                "trial_obj": trial_obj,
+                                "score": score,
+                                "key": action_key,
+                            }
+
+                if best is None:
+                    break
+
+                accept = best["delta"] > 0.0
+                if (not accept) and bandit_temp > 0.0:
+                    prob = math.exp(best["delta"] / max(1e-9, bandit_temp))
+                    accept = np.random.random() < prob
+
+                # Always update action statistics from observed one-step reward.
+                self._record_action_feedback(best["key"], float(best["delta"]))
+
+                if not accept:
+                    continue
+
+                i_best, j_best = int(best["i"]), int(best["j"])
+                if best["op"] == "add":
+                    current_storage[j_best, i_best] = True
+                else:
+                    current_storage[j_best, i_best] = False
+                current_obj = float(best["trial_obj"])
+
         # ================= Metrics aligned with MILP =================
-        
+
         # Convert current_storage to state dict for calculator
-        state_current = {(i, j): 1 if current_storage[j, i] else 0
-                        for i in range(I) for j in range(J)}
+        state_current = self._build_state_dict(current_storage, I, J)
         
         # Use centralized calculator for all objectives
         breakdown = self.calculator.calculate(

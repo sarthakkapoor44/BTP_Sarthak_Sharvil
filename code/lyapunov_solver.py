@@ -76,6 +76,17 @@ class LyapunovSolver(BaseSolver):
                     Q_cov[(i, p)] = 0.0
                     Q_B[(i, p)] = max(0.0, H_i - best_ring)
 
+        # Start from previous placement and enforce activity semantics from D1-D2:
+        # inactive datasets cannot remain placed in the new state.
+        x_new = dict(A_prev)
+        for i in I:
+            if self.data.active_datasets.get((i, t), 0) == 1:
+                continue
+            for j in J:
+                if x_new.get((i, j), 0) == 1:
+                    x_new[(i, j)] = 0
+                    sol.removes[(i, j)] = 1
+
         # =============================================================
         # 2) Score ADD and REMOVE actions
         # =============================================================
@@ -101,16 +112,17 @@ class LyapunovSolver(BaseSolver):
                         )
 
                 cap_penalty = Q_cap[j] * size_i
-                move_cost = self.config.lambda_add * self.config.get_add_cost(i, j, t)
+                add_cost = self.config.lambda_add * self.config.get_add_cost(i, j, t)
 
                 # ---------- ADD ----------
                 if A_prev.get((i, j), 0) == 0:
-                    score = benefit_gain - cap_penalty - V * move_cost
+                    score = benefit_gain - cap_penalty - V * add_cost
                     actions.append(("add", score, i, j))
 
                 # ---------- REMOVE ----------
                 else:
-                    score = cap_penalty - benefit_gain - V * move_cost
+                    # Objective calculator charges operation cost only for adds.
+                    score = cap_penalty - benefit_gain
                     actions.append(("remove", score, i, j))
 
         # =============================================================
@@ -118,7 +130,6 @@ class LyapunovSolver(BaseSolver):
         # =============================================================
         actions.sort(key=lambda x: x[1], reverse=True)
 
-        x_new = dict(A_prev)
         budget = self.migration_budget
 
         for act, score, i, j in actions:
@@ -142,7 +153,6 @@ class LyapunovSolver(BaseSolver):
             elif act == "remove" and x_new.get((i, j), 0) == 1:
                 x_new[(i, j)] = 0
                 sol.removes[(i, j)] = 1
-                budget -= cost
 
         # Fill states
         for i in I:

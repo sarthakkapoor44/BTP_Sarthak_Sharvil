@@ -29,6 +29,7 @@ class uEDDEConfig:
     
     # ========== ROBUSTNESS PARAMETERS ==========
     use_robust: bool = True  # Enable two-stage robust optimization
+    use_repair_in_robust: bool = True  # Apply K+1 repair in robust mode; if False, only evaluate worst-case on solver output
     K_failures: int = 1  # Maximum failures per slot (K_t)
     Gamma_budget: float = 2.0  # Bertsimas-Sim uncertainty budget
     use_k_survivable_coverage: bool = False  # Use m_{ip,t} = min(K_t+1, |N_p(H_i)|) in nominal coverage
@@ -56,10 +57,72 @@ class uEDDEConfig:
     # ========== GREEDY HEURISTIC PARAMETERS ==========
     greedy_enable_pruning: bool = True  # Reverse-prune redundant replicas
     greedy_scoring_method: str = "robust"  # Options: "nominal", "robust", "hybrid"
+    greedy_bandit_enabled: bool = True  # Enable online bandit refinement on top of greedy
+    greedy_bandit_iters: int = 20  # Local-search steps per time slot
+    greedy_bandit_alpha: float = 0.65  # Blend: learned reward vs one-step objective delta
+    greedy_bandit_ucb_c: float = 0.35  # UCB exploration bonus scale
+    greedy_bandit_temperature: float = 0.02  # Simulated-annealing acceptance for small downhill moves
+
+    # ========== KMEANS DATASET SOLVER PARAMETERS ==========
+    kmeans_k_search: str = "binary"  # Options: "binary", "linear"
+
+    # ========== Q-LEARNING PARAMETERS ==========
+    q_pretrain_episodes: int = 0  # Offline warm-start episodes before online solve
+    q_pretrain_max_steps: int = 0  # 0 means solver-derived default
+    q_pretrain_epsilon: float = 0.35  # Exploration used only during pretraining
+    q_epsilon_decay: float = 0.995  # Per-slot epsilon decay after decisions
+    q_epsilon_min: float = 0.01  # Lower bound for epsilon decay
+    q_learn_feasibility: bool = True  # Learn a soft feasibility mask from experience
+    q_feasibility_threshold: float = 0.55  # Skip candidates predicted below this probability
+    q_feasibility_lr: float = 0.05  # Online learning rate for feasibility predictor
+    q_feasibility_min_trials: int = 5  # Require some history before masking aggressively
+
+    # ========== BEAM SEARCH PARAMETERS ==========
+    beam_width: int = 5  # Number of partial placements kept at each depth
+    beam_max_depth: int = 4  # Search depth per slot
+    beam_candidates_per_step: int = 8  # Candidate moves expanded from each beam state
+    beam_allow_remove: bool = True  # Allow remove moves during beam search
+
+    # ========== LOOKAHEAD HINDSIGHT MILP ==========
+    lookahead_window: int = 3  # Number of future slots to include in rolling-horizon MILP
+    lookahead_discount: float = 1.0  # Optional discount across the lookahead horizon
+    hindsight_r_nom_surrogate_weight: float = 0.0  # Linear surrogate weight for R_nom in lookahead MILP
+
+    # ========== ADAPTIVE ENSEMBLE ==========
+    ensemble_solver_types: List[str] = field(default_factory=lambda: ["beam_search", "greedy", "gnn_ppo"])
+    ensemble_window: int = 5  # Rolling history window for solver selection
+    ensemble_warmup_slots: int = 0  # Use current-slot score until this many slots are seen
+    ensemble_use_counterfactual: bool = True  # Track all candidate scores vs selected-only
+    ensemble_bandit_method: str = "sw_ucb"  # Options: "ucb", "thompson", "exp3", "sw_ucb"
+    ensemble_exploration_c: float = 0.7  # UCB exploration strength
+    ensemble_exp3_gamma: float = 0.1  # EXP3 exploration mixing weight
+    ensemble_context_weight: float = 0.2  # Weight of contextual linear prediction in scoring
+    ensemble_lin_ridge: float = 1.0  # Ridge regularization for contextual linear model
+
+    # ========== GNN PPO SOLVER ==========
+    gnn_ppo_embed_dim: int = 8
+    gnn_ppo_max_steps: int = 16
+    gnn_ppo_max_candidates: int = 200
+    gnn_ppo_gamma: float = 0.98
+    gnn_ppo_gae_lambda: float = 0.95
+    gnn_ppo_clip_eps: float = 0.2
+    gnn_ppo_entropy_coef: float = 0.01
+    gnn_ppo_actor_lr: float = 0.01
+    gnn_ppo_critic_lr: float = 0.02
+    gnn_ppo_seed: int = 7
+    gnn_ppo_temperature: float = 0.8
+    gnn_ppo_explore_eps: float = 0.05
+    gnn_ppo_topk_eval: int = 12
+    gnn_ppo_min_improvement: float = 1e-5
+    gnn_ppo_safe_mode: bool = True
     
     # ========== DATASET LOADING ==========
     dataset_source: str = "synthetic"  # Options: "synthetic", "netflix", "spotify", "custom"
     custom_dataset_path: Optional[str] = None  # Path to custom CSV
+    
+    # ========== PARALLEL PARAMETRIC EXPLORATION ==========
+    parametric_lambda_remove_values: List[float] = field(default_factory=lambda: [0.0, 0.1, 0.2, 0.5, 1.0])
+    num_parallel_workers: int = 4  # Number of CPU cores for parallel solving
     
     # ========== VISUALIZATION ==========
     plot_per_slot: bool = True  # Show detailed per-slot results

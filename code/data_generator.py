@@ -69,6 +69,14 @@ class DataGenerator:
             for i in range(self.config.num_datasets):
                 for j in range(self.config.num_servers):
                     self.initial_state[(i, j)] = 1 if self.rng.random() < sparsity else 0
+
+            # Keep the initial state non-degenerate: every dataset starts with
+            # at least one replica so the offline objective has a meaningful baseline.
+            for i in range(self.config.num_datasets):
+                if sum(self.initial_state[(i, j)] for j in range(self.config.num_servers)) == 0:
+                    j_pick = int(self.rng.integers(0, self.config.num_servers))
+                    self.initial_state[(i, j_pick)] = 1
+
             print(f"✓ Generated random initial state (sparsity={sparsity})")
         
         # Validate capacity

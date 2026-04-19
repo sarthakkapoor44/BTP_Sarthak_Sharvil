@@ -73,14 +73,59 @@ class ExperimentConfig:
     GAMMA_BUDGET: float = 2.0  # Bertsimas-Sim uncertainty budget
     RHO: float = 0.5  # Blend: 0=nominal only, 1=worst-case only
     USE_ROBUST: bool = True
+    USE_REPAIR_IN_ROBUST: bool = True  # Apply K+1 repair in robust mode
     USE_CCG: bool = True
+    USE_K_SURVIVABLE_COVERAGE: bool = False
     
     # -------- OPTIMIZATION --------
-    LAMBDA_ADD: float = 1.0  # Migration cost weight
+    LAMBDA_ADD: float = 1  # Migration cost weight
     ETA_STABILITY: float = 0.0  # Stability penalty
-    SOLVER_TYPE: str = "milp"  # Options: "milp", "offline_milp", "custom", "greedy", "lyapunov", "mcts", "qlearning"
+    SOLVER_TYPE: str = "milp"  # Options: "milp", "offline_milp", "hindsight_online_milp", "custom", "greedy", "lyapunov", "mcts", "qlearning", "gnn_ppo", "kmeans_dataset", "adaptive_ensemble"
     SOLVER_TIME_LIMIT: int = 300  # Seconds
     SOLVER_GAP: float = 0.01  # MIP gap tolerance
+
+    # -------- ADAPTIVE ENSEMBLE --------
+    ENSEMBLE_SOLVER_TYPES: List[str] = ["beam_search", "greedy"]
+    ENSEMBLE_WINDOW: int = 5
+    ENSEMBLE_WARMUP_SLOTS: int = 0
+    ENSEMBLE_USE_COUNTERFACTUAL: bool = True
+    ENSEMBLE_BANDIT_METHOD: str = "sw_ucb"  # "ucb", "thompson", "exp3", "sw_ucb"
+    ENSEMBLE_EXPLORATION_C: float = 0.7
+    ENSEMBLE_EXP3_GAMMA: float = 0.1
+    ENSEMBLE_CONTEXT_WEIGHT: float = 0.2
+    ENSEMBLE_LIN_RIDGE: float = 1.0
+
+    # -------- Q-LEARNING --------
+    Q_PRETRAIN_EPISODES: int = 50
+    Q_PRETRAIN_MAX_STEPS: int = 100
+    Q_PRETRAIN_EPSILON: float = 0.35
+    Q_EPSILON_DECAY: float = 0.995
+    Q_EPSILON_MIN: float = 0.01
+    Q_LEARN_FEASIBILITY: bool = True
+    Q_FEASIBILITY_THRESHOLD: float = 0.55
+    Q_FEASIBILITY_LR: float = 0.05
+    Q_FEASIBILITY_MIN_TRIALS: int = 5
+
+    # -------- BEAM SEARCH --------
+    BEAM_WIDTH: int = 5
+    BEAM_MAX_DEPTH: int = 4
+    BEAM_CANDIDATES_PER_STEP: int = 8
+    BEAM_ALLOW_REMOVE: bool = True
+
+    # -------- GREEDY + BANDIT REFINEMENT --------
+    GREEDY_BANDIT_ENABLED: bool = True
+    GREEDY_BANDIT_ITERS: int = 20
+    GREEDY_BANDIT_ALPHA: float = 0.65
+    GREEDY_BANDIT_UCB_C: float = 0.35
+    GREEDY_BANDIT_TEMPERATURE: float = 0.02
+
+    # -------- KMEANS DATASET SOLVER --------
+    KMEANS_K_SEARCH: str = "binary"  # Options: "binary", "linear"
+
+    # -------- HINDSIGHT LOOKAHEAD MILP --------
+    LOOKAHEAD_WINDOW: int = 5
+    LOOKAHEAD_DISCOUNT: float = 1.0
+    HINDSIGHT_R_NOM_SURROGATE_WEIGHT: float = 0.0
     
     # -------- NETWORK --------
     EDGE_PROBABILITY: float = 0.5  # For random topology
@@ -88,8 +133,8 @@ class ExperimentConfig:
     HOP_BUDGETS: Dict[int, int] = None  # Optional explicit per-dataset override
     
     # -------- CAPACITY --------
-    SERVER_CAPACITY: float = 10000.0  # Per-server capacity
-    DATASET_SIZE: float = 10.0  # Per-dataset size
+    SERVER_CAPACITY: float = 1000000.0  # Per-server capacity
+    DATASET_SIZE: float = 1.0  # Per-dataset size
     
     # -------- DATA --------
     DATASET_SOURCE: str = "synthetic"  # Options: "synthetic", "csv"
@@ -186,13 +231,46 @@ def build_config(exp_cfg: ExperimentConfig) -> uEDDEConfig:
         rho=exp_cfg.RHO,
         K_failures=exp_cfg.K_FAILURES,
         Gamma_budget=exp_cfg.GAMMA_BUDGET,
+        use_k_survivable_coverage=exp_cfg.USE_K_SURVIVABLE_COVERAGE,
         lambda_add=exp_cfg.LAMBDA_ADD,
         eta_stability=exp_cfg.ETA_STABILITY,
         use_robust=exp_cfg.USE_ROBUST,
+        use_repair_in_robust=exp_cfg.USE_REPAIR_IN_ROBUST,
         use_ccg=exp_cfg.USE_CCG,
         solver_type=exp_cfg.SOLVER_TYPE,
         solver_time_limit=exp_cfg.SOLVER_TIME_LIMIT,
         solver_gap=exp_cfg.SOLVER_GAP,
+        q_pretrain_episodes=exp_cfg.Q_PRETRAIN_EPISODES,
+        q_pretrain_max_steps=exp_cfg.Q_PRETRAIN_MAX_STEPS,
+        q_pretrain_epsilon=exp_cfg.Q_PRETRAIN_EPSILON,
+        q_epsilon_decay=exp_cfg.Q_EPSILON_DECAY,
+        q_epsilon_min=exp_cfg.Q_EPSILON_MIN,
+        q_learn_feasibility=exp_cfg.Q_LEARN_FEASIBILITY,
+        q_feasibility_threshold=exp_cfg.Q_FEASIBILITY_THRESHOLD,
+        q_feasibility_lr=exp_cfg.Q_FEASIBILITY_LR,
+        q_feasibility_min_trials=exp_cfg.Q_FEASIBILITY_MIN_TRIALS,
+        beam_width=exp_cfg.BEAM_WIDTH,
+        beam_max_depth=exp_cfg.BEAM_MAX_DEPTH,
+        beam_candidates_per_step=exp_cfg.BEAM_CANDIDATES_PER_STEP,
+        beam_allow_remove=exp_cfg.BEAM_ALLOW_REMOVE,
+        greedy_bandit_enabled=exp_cfg.GREEDY_BANDIT_ENABLED,
+        greedy_bandit_iters=exp_cfg.GREEDY_BANDIT_ITERS,
+        greedy_bandit_alpha=exp_cfg.GREEDY_BANDIT_ALPHA,
+        greedy_bandit_ucb_c=exp_cfg.GREEDY_BANDIT_UCB_C,
+        greedy_bandit_temperature=exp_cfg.GREEDY_BANDIT_TEMPERATURE,
+        kmeans_k_search=exp_cfg.KMEANS_K_SEARCH,
+        lookahead_window=exp_cfg.LOOKAHEAD_WINDOW,
+        lookahead_discount=exp_cfg.LOOKAHEAD_DISCOUNT,
+        hindsight_r_nom_surrogate_weight=exp_cfg.HINDSIGHT_R_NOM_SURROGATE_WEIGHT,
+        ensemble_solver_types=exp_cfg.ENSEMBLE_SOLVER_TYPES,
+        ensemble_window=exp_cfg.ENSEMBLE_WINDOW,
+        ensemble_warmup_slots=exp_cfg.ENSEMBLE_WARMUP_SLOTS,
+        ensemble_use_counterfactual=exp_cfg.ENSEMBLE_USE_COUNTERFACTUAL,
+        ensemble_bandit_method=exp_cfg.ENSEMBLE_BANDIT_METHOD,
+        ensemble_exploration_c=exp_cfg.ENSEMBLE_EXPLORATION_C,
+        ensemble_exp3_gamma=exp_cfg.ENSEMBLE_EXP3_GAMMA,
+        ensemble_context_weight=exp_cfg.ENSEMBLE_CONTEXT_WEIGHT,
+        ensemble_lin_ridge=exp_cfg.ENSEMBLE_LIN_RIDGE,
         plot_per_slot=exp_cfg.PLOT_PER_SLOT,
         plot_summary=exp_cfg.PLOT_SUMMARY,
         save_plots=exp_cfg.SAVE_OUTPUTS,
@@ -202,6 +280,7 @@ def build_config(exp_cfg: ExperimentConfig) -> uEDDEConfig:
         dataset_sizes={i: exp_cfg.DATASET_SIZE for i in range(exp_cfg.NUM_DATASETS)},
         server_capacities={j: exp_cfg.SERVER_CAPACITY for j in range(exp_cfg.NUM_SERVERS)},
         adjacency=adjacency,
+        server_bandwidth={j: exp_cfg.SERVER_CAPACITY for j in range(exp_cfg.NUM_SERVERS)},  
         dataset_source=exp_cfg.DATASET_SOURCE,
         custom_dataset_path=exp_cfg.CSV_FILE,  # Store CSV file path for later loading
     )
@@ -232,7 +311,7 @@ def build_data(config: uEDDEConfig, seed: int = 42) -> DataGenerator:
             print("✓ Generated synthetic data")
         
     elif config.dataset_source == "csv":
-        data.generate_all("data", activity=1)
+        data.generate_all("data", activity=1.0)
         if config.verbose:
             print("✓ Loaded data from CSV")
         
@@ -472,23 +551,32 @@ def run_multiple_solvers(exp_cfg: ExperimentConfig,
 if __name__ == "__main__":
     # ========== EXAMPLE 1: Single Solver Run ==========
     print("\n" + "#"*80)
-    print("# EXAMPLE 1: Single Solver (MILP, Robust, CCG)")
+    print("# EXAMPLE 1: Single Solver (Adaptive Ensemble, Robust K=1)")
     print("#"*80)
     
     exp1 = ExperimentConfig()
-    exp1.T = 5
-    exp1.NUM_DATASETS = 3
-    exp1.NUM_SERVERS = 5
+    exp1.T = 5000
+    exp1.NUM_DATASETS = 15
+    exp1.NUM_SERVERS = 10
     exp1.K_FAILURES = 1
-    exp1.RHO = 0.3
-    exp1.SOLVER_TYPE = "milp" 
+    exp1.GAMMA_BUDGET = 2.0
+    exp1.RHO = 0.2
+    exp1.SOLVER_TYPE = "adaptive_ensemble"
+    exp1.ENSEMBLE_SOLVER_TYPES = ["beam_search", "greedy"]
+    # Robust scoring already incurs oracle cost; disable counterfactual by default for runtime.
+    exp1.ENSEMBLE_USE_COUNTERFACTUAL = True
+    exp1.SOLVER_TIME_LIMIT = 120
+    exp1.SOLVER_GAP = 0.001
     exp1.USE_ROBUST = False
     exp1.USE_CCG = False
-    exp1.VERBOSE = False
+    exp1.VERBOSE = True
     exp1.PLOT_PER_SLOT = False
+    exp1.GREEDY_BANDIT_ENABLED = True
     exp1.PLOT_SUMMARY = True
     exp1.SAVE_OUTPUTS = True
     exp1.PARALLEL = True
+    # exp1.parametric_lambda_remove_values = [0, 0.1, 0.2, 0.5, 1.0]
+    # exp1.num_parallel_workers = 5
     exp1.OUTPUT_DIR = f"results/run_single_solver/single_{exp1.SOLVER_TYPE}"
     exp1.DATASET_SOURCE = "csv"
     exp1.CSV_FILE = "netflix_distilled.csv"  

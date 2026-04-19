@@ -3,11 +3,14 @@ from config import uEDDEConfig
 from data_generator import DataGenerator
 from milp_solver import MILPSolver
 from offline_milp_solver import OfflineMILPSolver
+from beam_search_solver import BeamSearchSolver
 from lyapunov_solver import LyapunovSolver
 from greedy_custom_solver import GreedyCustomSolver
 from rein_adaptive_solver import REINAdaptiveSolver
 from mcts_solver import MCTSSolver
 from q_learning_solver import QLearningSolver
+from kmeans_dataset_solver import KMeansDatasetSolver
+from adaptive_ensemble_solver import AdaptiveEnsembleSolver
 from typing import Dict, Tuple, List, Optional, Union
 from results_visualizer import ResultsVisualizer
 import copy
@@ -24,7 +27,9 @@ class SolverFactory:
             return MILPSolver(config, data_gen)
         elif solver_type == "offline_milp":
             return OfflineMILPSolver(config, data_gen)
-        elif solver_type == "lyapunovsolver":
+        elif solver_type == "beam_search":
+            return BeamSearchSolver(config, data_gen)
+        elif solver_type in ["lyapunovsolver", "lyapunov"]:
             return LyapunovSolver(config, data_gen)
         elif solver_type == "rein":
             return REINAdaptiveSolver(config, data_gen)
@@ -34,9 +39,13 @@ class SolverFactory:
             return MCTSSolver(config, data_gen)
         elif solver_type == "qlearning":
             return QLearningSolver(config, data_gen)
+        elif solver_type in ["kmeans_dataset", "kmeans++", "kmeans"]:
+            return KMeansDatasetSolver(config, data_gen)
+        elif solver_type in ["adaptive_ensemble", "ensemble", "meta"]:
+            return AdaptiveEnsembleSolver(config, data_gen)
         else:
             raise ValueError(f"Unknown solver type: {solver_type}. "
-                           f"Options: 'milp', 'offline_milp', 'greedy', 'lyapunovsolver', 'rein', 'mcts', 'qlearning'")
+                           f"Options: 'milp', 'offline_milp', 'beam_search', 'hindsight_online_milp', 'greedy', 'lyapunov' (or 'lyapunovsolver'), 'rein', 'mcts', 'qlearning', 'gnn_ppo', 'kmeans_dataset', 'adaptive_ensemble'")
     @staticmethod
     def _run_single_configuration(config: uEDDEConfig, data_gen: DataGenerator,
                                   show_visuals: bool = True,
